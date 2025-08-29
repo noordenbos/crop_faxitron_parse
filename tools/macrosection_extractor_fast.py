@@ -293,10 +293,79 @@ def predict_missing_numbers(parsed_numbers: List[str], expected_count: int = 10)
     return predicted_numbers
 
 
-def match_numbers_to_slabs_corner_distance(numbers: List[Tuple[int, int, int, int]], 
-                                         slabs: List[Tuple[int, int, int, int]]) -> List[Tuple[int, int]]:
-    """Match numbers to slabs using corner distance method."""
-    print("Matching numbers to slabs using corner distance...")
+def calculate_multi_point_distances(number_centroid: Tuple[int, int], 
+                                  slab_bbox: Tuple[int, int, int, int]) -> float:
+    """Calculate minimum distance to multiple key points on the slab."""
+    x1, y1, x2, y2 = slab_bbox
+    
+    # Key points on the slab for robust matching
+    key_points = [
+        (x1, y1),                    # Upper-left
+        ((x1 + x2) // 2, y1),       # Upper-center  
+        (x2, y1),                    # Upper-right
+        (x1, (y1 + y2) // 2),       # Left-center
+        (x2, (y1 + y2) // 2),       # Right-center
+        (x1, y2),                    # Lower-left
+        ((x1 + x2) // 2, y2),       # Lower-center
+        (x2, y2),                    # Lower-right
+        ((x1 + x2) // 2, (y1 + y2) // 2)  # Centroid
+    ]
+    
+    # Calculate minimum distance to any key point
+    distances = [np.sqrt((number_centroid[0] - px)**2 + 
+                        (number_centroid[1] - py)**2) 
+                for px, py in key_points]
+    
+    return min(distances)
+
+
+def match_numbers_to_slabs_optimal(numbers: List[Tuple[int, int, int, int]], 
+                                  slabs: List[Tuple[int, int, int, int]]) -> List[Tuple[int, int]]:
+    """Match numbers to slabs using multi-point distance minimization with Hungarian algorithm."""
+    print("Matching numbers to slabs using multi-point distance minimization...")
+    
+    if len(numbers) == 0 or len(slabs) == 0:
+        return []
+    
+    # Create cost matrix: numbers x slabs
+    cost_matrix = np.zeros((len(numbers), len(slabs)))
+    
+    for i, (num_x1, num_y1, num_x2, num_y2) in enumerate(numbers):
+        num_centroid = ((num_x1 + num_x2) // 2, (num_y1 + num_y2) // 2)
+        
+        for j, slab_bbox in enumerate(slabs):
+            # Calculate minimum distance to any key point on the slab
+            distance = calculate_multi_point_distances(num_centroid, slab_bbox)
+            cost_matrix[i, j] = distance
+    
+    print(f"Cost matrix shape: {cost_matrix.shape}")
+    print(f"Cost matrix:\n{cost_matrix}")
+    
+    # Use Hungarian algorithm for optimal assignment
+    try:
+        from scipy.optimize import linear_sum_assignment
+        row_indices, col_indices = linear_sum_assignment(cost_matrix)
+        
+        matches = []
+        total_cost = 0
+        for i, j in zip(row_indices, col_indices):
+            matches.append((i, j))
+            cost = cost_matrix[i, j]
+            total_cost += cost
+            print(f"  Number {i} -> Slab {j} (distance: {cost:.1f})")
+        
+        print(f"Total assignment cost: {total_cost:.1f}")
+        return matches
+        
+    except ImportError:
+        print("Warning: scipy not available, falling back to greedy matching...")
+        return match_numbers_to_slabs_greedy(numbers, slabs)
+
+
+def match_numbers_to_slabs_greedy(numbers: List[Tuple[int, int, int, int]], 
+                                 slabs: List[Tuple[int, int, int, int]]) -> List[Tuple[int, int]]:
+    """Fallback greedy matching method."""
+    print("Using greedy matching fallback...")
     
     matches = []
     used_slabs = set()
@@ -304,20 +373,14 @@ def match_numbers_to_slabs_corner_distance(numbers: List[Tuple[int, int, int, in
     for num_idx, (num_x1, num_y1, num_x2, num_y2) in enumerate(numbers):
         num_centroid = ((num_x1 + num_x2) // 2, (num_y1 + num_y2) // 2)
         
-        # Calculate distances to all slab corners
+        # Calculate distances to all available slabs
         slab_distances = []
-        for slab_idx, (slab_x1, slab_y1, slab_x2, slab_y2) in enumerate(slabs):
+        for slab_idx, slab_bbox in enumerate(slabs):
             if slab_idx in used_slabs:
                 continue
                 
-            # Distance to upper-left corner
-            dist_ul = np.sqrt((num_centroid[0] - slab_x1)**2 + (num_centroid[1] - slab_y1)**2)
-            # Distance to upper-right corner  
-            dist_ur = np.sqrt((num_centroid[0] - slab_x2)**2 + (num_centroid[1] - slab_y2)**2)
-            
-            # Use minimum distance
-            min_dist = min(dist_ul, dist_ur)
-            slab_distances.append((slab_idx, min_dist))
+            distance = calculate_multi_point_distances(num_centroid, slab_bbox)
+            slab_distances.append((slab_idx, distance))
         
         if slab_distances:
             # Sort by distance and pick closest
@@ -330,6 +393,88 @@ def match_numbers_to_slabs_corner_distance(numbers: List[Tuple[int, int, int, in
             print(f"  Number {num_idx} -> Slab {best_slab_idx} (distance: {best_distance:.1f})")
     
     return matches
+
+
+def create_enhanced_matching_overlay(faxitron_rgb: np.ndarray, slabs: List[Tuple[int, int, int, int]], 
+                                   numbers: List[Tuple[int, int, int, int]], matches: List[Tuple[int, int]], 
+                                   parsed_numbers: List[str], output_path: str):
+    """Create enhanced overlay showing number-to-slab matches with color coding."""
+    print("Creating enhanced matching overlay...")
+    
+    img = Image.fromarray(faxitron_rgb.copy())
+    draw = ImageDraw.Draw(img)
+    
+    # Create a mapping from slab_idx to number_idx for easy lookup
+    slab_to_number = {}
+    for num_idx, slab_idx in matches:
+        slab_to_number[slab_idx] = num_idx
+    
+    # Define colors for different matches (similar colors for matched pairs)
+    colors = [
+        (255, 0, 0),      # Red
+        (0, 255, 0),      # Green  
+        (0, 128, 255),    # Blue
+        (255, 165, 0),    # Orange
+        (128, 0, 128),    # Purple
+        (255, 255, 0),    # Yellow
+        (0, 255, 255),    # Cyan
+        (255, 0, 255),    # Magenta
+        (165, 42, 42),    # Brown
+        (0, 128, 0)       # Dark Green
+    ]
+    
+    # Draw slabs and their matched numbers with similar colors
+    for slab_idx, (x1, y1, x2, y2) in enumerate(slabs):
+        if slab_idx in slab_to_number:
+            # This slab has a matched number
+            num_idx = slab_to_number[slab_idx]
+            color = colors[slab_idx % len(colors)]
+            
+            # Draw slab with color
+            draw.rectangle([x1, y1, x2, y2], outline=color, width=4)
+            draw.text((x1, y1-25), f"SLAB_{slab_idx}", fill=color, stroke_width=2)
+            
+            # Draw matched number with same color
+            num_bbox = numbers[num_idx]
+            num_x1, num_y1, num_x2, num_y2 = num_bbox
+            draw.rectangle([num_x1, num_y1, num_x2, num_y2], outline=color, width=4)
+            
+            # Add number label with parsed value
+            parsed_value = parsed_numbers[num_idx]
+            label = f"NUM_{parsed_value}" if parsed_value != "?" else "NUM_?"
+            draw.text((num_x1, num_y1-25), label, fill=color, stroke_width=2)
+            
+            # Draw connection line between slab and number
+            slab_center = ((x1 + x2) // 2, (y1 + y2) // 2)
+            num_center = ((num_x1 + num_x2) // 2, (num_y1 + num_y2) // 2)
+            draw.line([slab_center, num_center], fill=color, width=2)
+            
+        else:
+            # This slab has no matched number (use gray)
+            draw.rectangle([x1, y1, x2, y2], outline=(128, 128, 128), width=3)
+            draw.text((x1, y1-25), f"SLAB_{slab_idx} (NO MATCH)", fill=(128, 128, 128), stroke_width=2)
+    
+    # Draw unmatched numbers in red
+    matched_number_indices = {num_idx for _, num_idx in matches}
+    for i, (x1, y1, x2, y2) in enumerate(numbers):
+        if i not in matched_number_indices:
+            draw.rectangle([x1, y1, x2, y2], outline=(255, 0, 0), width=3)
+            parsed_value = parsed_numbers[i]
+            label = f"UNMATCHED_{parsed_value}" if parsed_value != "?" else "UNMATCHED_?"
+            draw.text((x1, y1-25), label, fill=(255, 0, 0), stroke_width=2)
+    
+    # Add legend
+    legend_y = 30
+    draw.text((20, legend_y), "Enhanced Matching Overlay", fill=(0, 0, 0), stroke_width=3)
+    legend_y += 30
+    draw.text((20, legend_y), "Same color = Matched pair", fill=(0, 0, 0), stroke_width=2)
+    legend_y += 20
+    draw.text((20, legend_y), "Gray = Unmatched slab", fill=(128, 128, 128), stroke_width=2)
+    legend_y += 20
+    draw.text((20, legend_y), "Red = Unmatched number", fill=(255, 0, 0), stroke_width=2)
+    
+    img.save(output_path)
+    print(f"Enhanced matching overlay saved to: {output_path}")
 
 
 def visualize_size_debug(img_gray: np.ndarray, slabs: List[Tuple[int, int, int, int]], 
@@ -413,8 +558,8 @@ def main():
         # Predict missing numbers based on sequence pattern
         final_parsed = predict_missing_numbers(merged_parsed, expected_count=10)
         
-        # Match merged numbers to slabs
-        matches = match_numbers_to_slabs_corner_distance(merged_numbers, slabs)
+        # Match merged numbers to slabs using optimal multi-point distance minimization
+        matches = match_numbers_to_slabs_optimal(merged_numbers, slabs)
         
         # Create complete mapping from slab_idx to final number (parsed or predicted)
         slab_to_number = {}
@@ -441,6 +586,16 @@ def main():
                 slab_idx = available_slabs[i]
                 slab_to_number[slab_idx] = predicted_num
                 slab_to_source[slab_idx] = "predicted"
+                print(f"    Assigned prediction '{predicted_num}' to slab {slab_idx}")
+        
+        # Also replace any remaining OCR failures with predictions if available
+        remaining_predictions = [n for n in predicted_numbers if n not in slab_to_number.values()]
+        for slab_idx, current_value in slab_to_number.items():
+            if current_value in ["?", "1?"] and remaining_predictions:
+                replacement = remaining_predictions.pop(0)
+                slab_to_number[slab_idx] = replacement
+                slab_to_source[slab_idx] = "predicted_replacement"
+                print(f"    Replaced OCR failure '{current_value}' with prediction '{replacement}' in slab {slab_idx}")
         
         # Save simplified core metrics (PNG filename -> final parsed/predicted number)
         with open(os.path.join(args.out_dir, 'core_mapping.txt'), 'w') as f:
@@ -561,6 +716,10 @@ def main():
         
         # Create overlay with labels
         visualize_bbox_on_faxitron(fax_rgb, slabs + merged_numbers, labels, overlay_path)
+        
+        # Create enhanced overlay showing number-to-slab matches with color coding
+        enhanced_overlay_path = os.path.join(args.out_dir, 'enhanced_matching_overlay.png')
+        create_enhanced_matching_overlay(fax_rgb, slabs, merged_numbers, matches, merged_parsed, enhanced_overlay_path)
         
         # Also create a detailed debug overlay showing all detected components
         debug_overlay_path = os.path.join(args.out_dir, 'detailed_debug_overlay.png')
