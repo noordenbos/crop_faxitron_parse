@@ -95,6 +95,37 @@ python test.py \
         [OPTIONS]
 ```
 
+## Macrosection extraction tool (Faxitron → per-slab crops)
+
+This repository includes a small utility to extract per-slab macrosection regions directly from a full Faxitron image using the corresponding source (segment) masks. It computes a tight bounding box on each segment mask, rescales the box from the source image DPI to the Faxitron DPI, and crops the Faxitron accordingly.
+
+Usage:
+
+```bash
+python tools/macrosection_extractor.py \
+    --faxitron /path/to/faxitron.png \
+    --sources /path/to/src1.png /path/to/src2.png \
+    --source-masks /path/to/src1_mask.png /path/to/src2_mask.png \
+    --out-dir /path/to/output \
+    --viz
+```
+
+Faxitron-only (auto segmentation) mode:
+
+```bash
+python tools/macrosection_extractor.py \
+    --faxitron /path/to/faxitron.png \
+    --out-dir /path/to/output \
+    --auto \
+    --viz
+```
+
+Notes:
+- DPI alignment rescales the mask-derived bounding box from source pixels to target (Faxitron) pixels using the per-image stored DPI: `x_target = x_source * (dpi_target_x / dpi_source_x)` (same for y).
+- The boxes are expanded to square with a configurable `--crop-margin` to ensure sufficient context.
+- If `--viz` is provided, an overlay image with all boxes drawn on the Faxitron is saved.
+ - In `--auto` mode, OpenCV (cv2) is required; slabs are detected via thresholding + morphology + connected components and sorted left-to-right by centroid.
+
  
 # Citation
 If you find this repository useful, please consider citing our paper:
