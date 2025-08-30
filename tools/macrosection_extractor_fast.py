@@ -608,21 +608,41 @@ def main():
         merged_parsed = filtered_parsed
         print(f"    After filtering: {len(merged_numbers)} numbers with valid OCR")
         
-        # Predict missing numbers based on sequence pattern
-        final_parsed = predict_missing_numbers(merged_parsed, expected_count=10)
-        
-        # Match merged numbers to slabs using optimal multi-point distance minimization
-        matches = match_numbers_to_slabs_optimal(merged_numbers, slabs)
-        
-        # Create complete mapping from slab_idx to final number (parsed or predicted)
+        # Initialize mapping dictionaries
         slab_to_number = {}
         slab_to_source = {}
         
-        # First, add parsed numbers
-        for num_idx, slab_idx in matches:
-            number_value = merged_parsed[num_idx]
-            slab_to_number[slab_idx] = number_value
-            slab_to_source[slab_idx] = "parsed"
+        # Handle case where no numbers are detected - assign sequential labels L>R, T>B
+        if len(merged_numbers) == 0:
+            print("No numbers detected - assigning sequential labels (L>R, T>B) starting from 1")
+            
+            # Sort slabs by position: top to bottom, then left to right
+            sorted_slabs = sorted(enumerate(slabs), key=lambda x: (x[1][1], x[1][0]))  # Sort by y, then x
+            
+            # Assign sequential numbers starting from 1
+            for i, (slab_idx, _) in enumerate(sorted_slabs):
+                slab_to_number[slab_idx] = str(i + 1)
+                slab_to_source[slab_idx] = "sequential_auto"
+                print(f"    Assigned sequential number '{i + 1}' to slab {slab_idx}")
+            
+            # No need for prediction or matching in this case
+            final_parsed = [str(i + 1) for i in range(len(slabs))]
+            matches = []
+        else:
+            # Normal flow: predict missing numbers and match to slabs
+            final_parsed = predict_missing_numbers(merged_parsed, expected_count=10)
+            
+            # Match merged numbers to slabs using optimal multi-point distance minimization
+            matches = match_numbers_to_slabs_optimal(merged_numbers, slabs)
+        
+        # Create complete mapping from slab_idx to final number (parsed or predicted)
+        
+        # First, add parsed numbers (only if we have matches)
+        if matches:
+            for num_idx, slab_idx in matches:
+                number_value = merged_parsed[num_idx]
+                slab_to_number[slab_idx] = number_value
+                slab_to_source[slab_idx] = "parsed"
         
         # Then, add predicted numbers for missing slabs
         predicted_numbers = [n for n in final_parsed if n not in [merged_parsed[idx] for idx, _ in matches]]
