@@ -72,10 +72,7 @@ def detect_greyscale_slabs_fast(img_gray: np.ndarray) -> List[Tuple[int, int, in
     """Detect tissue slabs using fast binary thresholding."""
     print("Detecting greyscale slabs (fast mode)...")
     
-    # Remove right 5% of image (boilerplate metadata)
-    right_cutoff = int(img_gray.shape[1] * 0.95)
-    img_gray = img_gray[:, :right_cutoff]
-    
+    # Work on full image - no cropping here
     # Remove near-white pixels (metadata, text, labels)
     img_gray[img_gray >= 220] = 0
     
@@ -95,24 +92,22 @@ def detect_greyscale_slabs_fast(img_gray: np.ndarray) -> List[Tuple[int, int, in
     
     # Filter components by area - keep large components (slabs)
     slabs = []
+    slab_labels = []  # Track which component each slab belongs to
     for i in range(1, num_labels):
         x, y, w, h, area = stats[i]
         if area > 100000:  # Size-based filtering for slabs
             slabs.append((x, y, x + w, y + h))
-    
-
+            slab_labels.append(i)  # Component label for this slab
     
     print(f"Detected {len(slabs)} slabs")
-    return slabs
+    return slabs, labels, slab_labels
 
 
 def detect_grey_numbers_fast(img_gray: np.ndarray, slabs: List[Tuple[int, int, int, int]]) -> List[Tuple[int, int, int, int]]:
     """Detect grey numbers using fast size-based filtering with smart merging."""
     print("Detecting grey numbers (fast mode)...")
     
-    # Remove right 5% of image
-    right_cutoff = int(img_gray.shape[1] * 0.95)
-    img_gray = img_gray[:, :right_cutoff]
+    # Work on full image - no cropping here
     
     # Remove near-white pixels (metadata, text, labels)
     img_gray[img_gray >= 220] = 0
@@ -581,10 +576,10 @@ def main():
         # Convert to grayscale
         gray = cv2.cvtColor(fax_rgb, cv2.COLOR_RGB2GRAY)
         
-        # Detect slabs (fast)
-        slabs = detect_greyscale_slabs_fast(gray)
+        # Detect slabs (fast) - work on full image, get segmentation map
+        slabs, slab_components, slab_labels = detect_greyscale_slabs_fast(gray)
         
-        # Detect numbers (fast)
+        # Detect numbers (fast) - work on full image for consistency
         numbers = detect_grey_numbers_fast(gray, slabs)
         
         # Parse numbers using OCR
@@ -844,8 +839,8 @@ def main():
         print("Cropping individual slabs with mask-based isolation...")
         overlay_boxes = []
         
-        # Use the existing binary mask from detailed debug overlay
-        # This mask already has the exact slab regions identified
+        # Use the same connected components that were used for slab detection
+        # This ensures we're using the exact same mask that identified the slabs
         for idx, (x1, y1, x2, y2) in enumerate(slabs):
             # Get the assigned number for this slab
             slab_number = slab_to_number.get(idx, "UNASSIGNED")
@@ -860,33 +855,32 @@ def main():
                 number_str = str(slab_number)
             
             # Create a proper binary mask for this specific slab
-            # We need to identify which connected component this slab belongs to
-            # and create a mask that only includes pixels from that component
-            
-            # First, find the connected component that this slab belongs to
-            # by looking at the center of the bounding box
-            center_x, center_y = (x1 + x2) // 2, (y1 + y2) // 2
-            component_label = labels_debug[center_y, center_x]
+            # Use the exact component label that was used to detect this slab
+            component_label = slab_labels[idx]
             
             # Create a binary mask where only this component is white
-            slab_mask = (labels_debug == component_label).astype(np.uint8) * 255
+            # This mask is in the same coordinate space as the full image
+            slab_mask = (slab_components == component_label).astype(np.uint8) * 255
             
-            # Apply the mask to the original image (zero out non-slab pixels)
-            masked_image = fax_rgb.copy()
-            masked_image[slab_mask == 0] = 0  # Set background to black
+            # Apply the mask to the full grayscale image
+            masked_gray = gray.copy()
+            masked_gray[slab_mask == 0] = 0  # Set background to black
             
-            # Crop the masked region
-            slab_crop = masked_image[y1:y2, x1:x2]
+            # Crop the masked region from the full image
+            slab_crop_gray = masked_gray[y1:y2, x1:x2]
+            
+            # Convert back to RGB for saving
+            slab_crop_rgb = cv2.cvtColor(slab_crop_gray, cv2.COLOR_GRAY2RGB)
             
             # Save both the original rectangular crop and the masked crop
-            # Original crop (for reference)
+            # Original crop (for reference) - use original image coordinates
             original_crop = crop_macrosection(fax_rgb, (x1, y1, x2, y2))
             original_name = f'greyscale_slab_{idx:03d}.png'
             save_image(original_crop, os.path.join(args.out_dir, original_name))
             
-            # Masked crop (clean, isolated using exact detection mask)
+            # Masked crop (clean, isolated using exact detection mask) - use cropped image
             masked_name = f'slab_{number_str}_{source}_masked.png'
-            save_image(slab_crop, os.path.join(args.out_dir, masked_name))
+            save_image(slab_crop_rgb, os.path.join(args.out_dir, masked_name))
             
             print(f"    Saved {original_name} and {masked_name} (slab {idx} -> number {slab_number}, {source})")
             overlay_boxes.append((x1, y1, x2, y2))
