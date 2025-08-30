@@ -160,25 +160,56 @@ def parse_number_from_region_tesseract(img_gray: np.ndarray, bbox: Tuple[int, in
     # Method 3: Simple threshold with manual value
     _, binary3 = cv2.threshold(region, 127, 255, cv2.THRESH_BINARY)
     
-    # Test all binarization methods with multiple PSM modes
+    # Test all binarization methods with multiple orientations and PSM modes
     for binary_img, method_name in [(binary1, "Otsu"), (binary2, "Adaptive"), (binary3, "Simple")]:
+        
+        # First try auto-orientation detection (PSM 0)
+        try:
+            config = f'--psm 0 --oem 3 -c tessedit_char_whitelist=0123456789'
+            text = pytesseract.image_to_string(binary_img, config=config)
+            text = text.strip()
+            
+            if text:
+                # Get confidence
+                data = pytesseract.image_to_data(binary_img, config=config, output_type=pytesseract.Output.DICT)
+                if data['conf']:
+                    confidence = max(data['conf'])
+                    if confidence > best_confidence:
+                        best_confidence = confidence
+                        best_text = text
+                        print(f"    {method_name} + PSM0 (auto-orientation): '{text}' (conf: {confidence})")
+        except Exception as e:
+            pass
+        
+        # Then try manual rotations with standard PSM modes
         for psm in [7, 8, 13]:  # Different Page Segmentation Modes
-            try:
-                config = f'--psm {psm} --oem 3 -c tessedit_char_whitelist=0123456789'
-                text = pytesseract.image_to_string(binary_img, config=config)
-                text = text.strip()
-                
-                if text:
-                    # Get confidence
-                    data = pytesseract.image_to_data(binary_img, config=config, output_type=pytesseract.Output.DICT)
-                    if data['conf']:
-                        confidence = max(data['conf'])
-                        if confidence > best_confidence:
-                            best_confidence = confidence
-                            best_text = text
-                            print(f"    {method_name} + PSM{psm}: '{text}' (conf: {confidence})")
-            except Exception as e:
-                continue
+            for rotation in [0, 90, 180, 270]:  # Try different rotations
+                try:
+                    # Rotate the image if needed
+                    if rotation == 0:
+                        rotated_img = binary_img
+                    elif rotation == 90:
+                        rotated_img = cv2.rotate(binary_img, cv2.ROTATE_90_CLOCKWISE)
+                    elif rotation == 180:
+                        rotated_img = cv2.rotate(binary_img, cv2.ROTATE_180)
+                    elif rotation == 270:
+                        rotated_img = cv2.rotate(binary_img, cv2.ROTATE_90_COUNTERCLOCKWISE)
+                    
+                    config = f'--psm {psm} --oem 3 -c tessedit_char_whitelist=0123456789'
+                    text = pytesseract.image_to_string(rotated_img, config=config)
+                    text = text.strip()
+                    
+                    if text:
+                        # Get confidence
+                        data = pytesseract.image_to_data(rotated_img, config=config, output_type=pytesseract.Output.DICT)
+                        if data['conf']:
+                            confidence = max(data['conf'])
+                            if confidence > best_confidence:
+                                best_confidence = confidence
+                                best_text = text
+                                print(f"    {method_name} + PSM{psm} + {rotation}°: '{text}' (conf: {confidence})")
+                except Exception as e:
+                    continue
     
     # Return best result if confidence is reasonable
     # Filter out low-confidence results that are likely noise
